@@ -5,11 +5,15 @@ from unet import Unet
 from tqdm import tqdm
 
 class MNISTDiffusion(nn.Module):
-    def __init__(self,image_size,in_channels,time_embedding_dim=256,timesteps=1000,base_dim=32,dim_mults= [1, 2, 4, 8]):
+    def __init__(self,image_size,in_channels,time_embedding_dim=256,timesteps=1000,base_dim=32,dim_mults= [1, 2, 4, 8], 
+                 num_small_unet_steps = 20 # added this argument to specify how many timesteps will use small unet
+                 ):
         super().__init__()
         self.timesteps=timesteps
         self.in_channels=in_channels
         self.image_size=image_size
+
+        self.num_small_unet_steps = num_small_unet_steps
 
         betas=self._cosine_variance_schedule(timesteps)
 
@@ -23,13 +27,21 @@ class MNISTDiffusion(nn.Module):
         self.register_buffer("sqrt_one_minus_alphas_cumprod",torch.sqrt(1.-alphas_cumprod))
 
         self.model=Unet(timesteps,time_embedding_dim,in_channels,in_channels,base_dim,dim_mults)
+        self.small_model=Unet(timesteps,time_embedding_dim,in_channels,
+                              in_channels,base_dim,[dim_mults[-1]]) # last layer dim mult is taken
 
-    def forward(self,x,noise):
+    def forward(self,x,noise,train_small_unet=False):
         # x:NCHW
-        t=torch.randint(0,self.timesteps,(x.shape[0],)).to(x.device)
-        x_t=self._forward_diffusion(x,t,noise)
-        pred_noise=self.model(x_t,t)
-
+        if train_small_unet == False:
+            t=torch.randint(0,self.timesteps-self.num_small_unet_steps,(x.shape[0],)).to(x.device)
+            #print("large_model")
+            x_t=self._forward_diffusion(x,t,noise)
+            pred_noise=self.model(x_t,t)
+        else:
+            t=torch.randint(self.timesteps-self.num_small_unet_steps,self.timesteps,(x.shape[0],)).to(x.device)
+            #print("small_model")
+            x_t=self._forward_diffusion(x,t,noise)
+            pred_noise=self.small_model(x_t,t)
         return pred_noise
 
     @torch.no_grad()
@@ -40,9 +52,19 @@ class MNISTDiffusion(nn.Module):
             t=torch.tensor([i for _ in range(n_samples)]).to(device)
 
             if clipped_reverse_diffusion:
-                x_t=self._reverse_diffusion_with_clip(x_t,t,noise)
+                if i >= self.timesteps-self.num_small_unet_steps:
+                    x_t=self._reverse_diffusion_with_clip(x_t,t,noise,use_small_unet=True)
+                    #print("small model")
+                else:
+                    x_t=self._reverse_diffusion_with_clip(x_t,t,noise,use_small_unet=False)
+                    #print("large model")
             else:
-                x_t=self._reverse_diffusion(x_t,t,noise)
+                if i >= self.timesteps-self.num_small_unet_steps:
+                    x_t=self._reverse_diffusion(x_t,t,noise,use_small_unet=True)
+                    #print("small model")
+                else:
+                    x_t=self._reverse_diffusion(x_t,t,noise,use_small_unet=False)
+                    #print("large model")
 
         x_t=(x_t+1.)/2. #[-1,1] to [0,1]
 
@@ -63,13 +85,16 @@ class MNISTDiffusion(nn.Module):
 
 
     @torch.no_grad()
-    def _reverse_diffusion(self,x_t,t,noise):
+    def _reverse_diffusion(self,x_t,t,noise,use_small_unet=False):
         '''
         p(x_{t-1}|x_{t})-> mean,std
 
         pred_noise-> pred_mean and pred_std
         '''
-        pred=self.model(x_t,t)
+        if use_small_unet == False:
+            pred=self.model(x_t,t)
+        else:
+            pred=self.small_model(x_t,t)
 
         alpha_t=self.alphas.gather(-1,t).reshape(x_t.shape[0],1,1,1)
         alpha_t_cumprod=self.alphas_cumprod.gather(-1,t).reshape(x_t.shape[0],1,1,1)
@@ -87,13 +112,17 @@ class MNISTDiffusion(nn.Module):
 
 
     @torch.no_grad()
-    def _reverse_diffusion_with_clip(self,x_t,t,noise): 
+    def _reverse_diffusion_with_clip(self,x_t,t,noise,use_small_unet=False): 
         '''
         p(x_{0}|x_{t}),q(x_{t-1}|x_{0},x_{t})->mean,std
 
         pred_noise -> pred_x_0 (clip to [-1.0,1.0]) -> pred_mean and pred_std
         '''
-        pred=self.model(x_t,t)
+        if use_small_unet == False:
+            pred=self.model(x_t,t)
+        else:
+            pred=self.small_model(x_t,t)
+
         alpha_t=self.alphas.gather(-1,t).reshape(x_t.shape[0],1,1,1)
         alpha_t_cumprod=self.alphas_cumprod.gather(-1,t).reshape(x_t.shape[0],1,1,1)
         beta_t=self.betas.gather(-1,t).reshape(x_t.shape[0],1,1,1)
