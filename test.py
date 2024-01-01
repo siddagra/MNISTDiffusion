@@ -49,6 +49,7 @@ def parse_args():
     parser.add_argument('--log_freq',type = int,help = 'training log message printing frequence',default=10)
     parser.add_argument('--no_clip',action='store_true',help = 'set to normal sampling method without clip x_0 which could yield unstable samples')
     parser.add_argument('--cpu',action='store_true',help = 'cpu training')
+    parser.add_argument('--total_samples', help='total number of samples to sample',default=10000)
     args = parser.parse_args()
 
     return args
@@ -90,7 +91,7 @@ def main(args):
 
     count = 0
     model_ema.eval()
-    for j in range(0, (10000//args.n_samples)+1):
+    for j in range(0, (args.total_samples//args.n_samples)+1):
         samples=model_ema.module.sampling(args.n_samples,clipped_reverse_diffusion=not args.no_clip,device=device)
         for image in samples:
             save_image(image,"sampeled_images/image_{:0>8}.png".format(count))
