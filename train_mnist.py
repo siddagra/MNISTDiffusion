@@ -47,7 +47,7 @@ def parse_args():
     parser.add_argument('--model_ema_decay',type = float,help = 'ema model decay',default=0.995)
     parser.add_argument('--log_freq',type = int,help = 'training log message printing frequence',default=10)
     parser.add_argument('--no_clip',action='store_true',help = 'set to normal sampling method without clip x_0 which could yield unstable samples')
-    parser.add_argument('--cpu',action='store_true',help = 'cpu training')
+    parser.add_argument('--device',help='training device cuda/cpu to train on')
 
     args = parser.parse_args()
 
@@ -55,7 +55,7 @@ def parse_args():
 
 
 def main(args):
-    device="cpu" if args.cpu else "cuda"
+    device=args.device
     train_dataloader,test_dataloader=create_mnist_dataloaders(batch_size=args.batch_size,image_size=28)
     model=MNISTDiffusion(timesteps=args.timesteps,
                 image_size=28,
