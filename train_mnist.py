@@ -11,6 +11,8 @@ from utils import ExponentialMovingAverage
 import os
 import math
 import argparse
+import random
+import uuid
 
 def create_mnist_dataloaders(batch_size,image_size=28,num_workers=4):
     
@@ -47,8 +49,9 @@ def parse_args():
     parser.add_argument('--model_ema_decay',type = float,help = 'ema model decay',default=0.995)
     parser.add_argument('--log_freq',type = int,help = 'training log message printing frequence',default=10)
     parser.add_argument('--no_clip',action='store_true',help = 'set to normal sampling method without clip x_0 which could yield unstable samples')
-    parser.add_argument('--device',help='training device cuda/cpu to train on')
-
+    parser.add_argument('--device',help="training device cpu/cuda", default="cuda")
+    parser.add_argument('--num_small_unet_steps',type = int,help = 'number of steps to use small unet',default=50)
+    parser.add_argument('--output_dir',help = 'output directory',default='output_22')
     args = parser.parse_args()
 
     return args
@@ -61,8 +64,14 @@ def main(args):
                 image_size=28,
                 in_channels=1,
                 base_dim=args.model_base_dim,
-                dim_mults=[2,4]).to(device)
-
+                dim_mults=[2,4],
+                num_small_unet_steps=args.num_small_unet_steps
+            ).to(device)
+    """print(model)
+    print("trainable params:", f'{sum(p.numel() for p in model.parameters() if p.requires_grad):,}' )
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(name, f'{sum(p.numel() for p in param if p.requires_grad):,}')"""
     #torchvision ema setting
     #https://github.com/pytorch/vision/blob/main/references/classification/train.py#L317
     adjust = 1* args.batch_size * args.model_ema_steps / args.epochs
@@ -81,17 +90,34 @@ def main(args):
         model.load_state_dict(ckpt["model"])
 
     global_steps=0
+
+    # randomly trains either large or small unet based on 
+    # num_small_unet_steps and total timesteps
+    train_small_unet_ratio = args.num_small_unet_steps / args.timesteps
+
     for i in range(args.epochs):
         model.train()
         for j,(image,target) in enumerate(train_dataloader):
-            noise=torch.randn_like(image).to(device)
-            image=image.to(device)
-            pred=model(image,noise)
-            loss=loss_fn(pred,noise)
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-            scheduler.step()
+            if random.random() > train_small_unet_ratio:
+                noise=torch.randn_like(image).to(device)
+                image=image.to(device)
+                pred=model(image,noise,False)
+                loss=loss_fn(pred,noise)
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+                scheduler.step()
+
+            else:
+                noise=torch.randn_like(image).to(device)
+                image=image.to(device)
+                pred=model(image,noise,True)
+                loss=loss_fn(pred,noise)
+                loss.backward()
+                optimizer.step()
+                optimizer.zero_grad()
+                scheduler.step()
+            
             if global_steps%args.model_ema_steps==0:
                 model_ema.update_parameters(model)
             global_steps+=1
@@ -101,12 +127,12 @@ def main(args):
         ckpt={"model":model.state_dict(),
                 "model_ema":model_ema.state_dict()}
 
-        os.makedirs("results",exist_ok=True)
-        torch.save(ckpt,"results/steps_{:0>8}.pt".format(global_steps))
+        os.makedirs(f'{args.output_dir}',exist_ok=True)
+        torch.save(ckpt, "{}/steps_{:0>8}.pt".format(args.output_dir, global_steps))
 
         model_ema.eval()
         samples=model_ema.module.sampling(args.n_samples,clipped_reverse_diffusion=not args.no_clip,device=device)
-        save_image(samples,"results/steps_{:0>8}.png".format(global_steps),nrow=int(math.sqrt(args.n_samples)))
+        save_image(samples,"{}/steps_{:0>8}.png".format(args.output_dir,global_steps),nrow=int(math.sqrt(args.n_samples)))
 
 if __name__=="__main__":
     args=parse_args()
