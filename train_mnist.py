@@ -130,9 +130,10 @@ def main(args):
         os.makedirs(f'{args.output_dir}',exist_ok=True)
         torch.save(ckpt, "{}/steps_{:0>8}.pt".format(args.output_dir, global_steps))
 
-        model_ema.eval()
-        samples=model_ema.module.sampling(args.n_samples,clipped_reverse_diffusion=not args.no_clip,device=device)
-        save_image(samples,"{}/steps_{:0>8}.png".format(args.output_dir,global_steps),nrow=int(math.sqrt(args.n_samples)))
+        if args.n_samples > 0:
+            model_ema.eval()
+            samples=model_ema.module.sampling(args.n_samples,clipped_reverse_diffusion=not args.no_clip,device=device)
+            save_image(samples,"{}/steps_{:0>8}.png".format(args.output_dir,global_steps),nrow=int(math.sqrt(args.n_samples)))
 
 if __name__=="__main__":
     args=parse_args()
